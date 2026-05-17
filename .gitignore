@@ -1,0 +1,44 @@
+# ── Data ──────────────────────────────────────────────────────────────────────
+data/raw/
+data/processed/
+
+# ── Model checkpoints (too large to commit) ───────────────────────────────────
+checkpoints/*.pt
+checkpoints/*.pth
+
+# ── Environment & secrets ─────────────────────────────────────────────────────
+.env
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Outputs (keep structure, ignore content) ──────────────────────────────────
+checkpoints/gradcam/
