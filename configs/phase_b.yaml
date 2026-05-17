@@ -1,0 +1,15 @@
+phase:         phase_b
+data_dir:      data/raw
+freeze_base:   true
+unfreeze_from: -3
+lr:            0.00001
+weight_decay:  0.0001
+epochs:        15
+batch_size:    32
+num_workers:   4
+val_split:     0.15
+test_split:    0.10
+lr_patience:   3
+early_stop_patience: 7
+checkpoint_dir: checkpoints
+seed:          42
