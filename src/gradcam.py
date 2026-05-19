@@ -160,7 +160,7 @@ def overlay_heatmap(
     ) / 255.0
 
     # Apply colormap
-    cmap    = cm.get_cmap(colormap)
+    cmap    = plt.get_cmap(colormap)
     colored = cmap(heatmap_resized)[:, :, :3]           # drop alpha channel
     colored = (colored * 255).astype(np.uint8)
     colored = Image.fromarray(colored)
@@ -199,16 +199,16 @@ def explain(
     device = get_device()
 
     # ── Load model ────────────────────────────────────────────────────────────
-    ckpt    = torch.load(checkpoint_path, map_location=device)
+    ckpt    = torch.load(checkpoint_path, map_location=device, weights_only=False)
     classes = ckpt["classes"]
     config  = ckpt["config"]
 
     model = build_model(
         num_classes   = len(classes),
-        freeze_base   = config["freeze_base"],
-        unfreeze_from = config.get("unfreeze_from", None),
+        freeze_base   = False,
+        pretrained    = config.get("pretrained", True),
     ).to(device)
-    load_checkpoint(checkpoint_path, model, device)
+    model.load_state_dict(ckpt["model_state"])
 
     # ── Preprocess ────────────────────────────────────────────────────────────
     tensor, original = preprocess_image(image_path)

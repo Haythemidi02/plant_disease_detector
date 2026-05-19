@@ -9,10 +9,11 @@ def build_model(
     num_classes: int,
     freeze_base: bool = True,
     unfreeze_from: int = None,
+    pretrained: bool = True,
 ) -> nn.Module:
     """
-    Loads EfficientNetB0 pretrained on ImageNet and replaces
-    its classifier head for your number of plant disease classes.
+    Loads EfficientNetB0 and replaces its classifier head
+    for your number of plant disease classes.
 
     Args:
         num_classes   : number of output classes (38 for PlantVillage)
@@ -20,12 +21,14 @@ def build_model(
         unfreeze_from : if set, unfreeze layers from this index onward
                         counted from the END of features (Phase B).
                         e.g. unfreeze_from=-20 unfreezes last 20 layers.
+        pretrained    : if True, load ImageNet pretrained weights;
+                        if False, train from random init (baseline)
 
     Returns:
         model : nn.Module ready to move to device and train
     """
-    # Load pretrained backbone
-    weights = models.EfficientNet_B0_Weights.IMAGENET1K_V1
+    # Load backbone (with or without pretrained weights)
+    weights = models.EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None
     model = models.efficientnet_b0(weights=weights)
 
     # ── Step 1: freeze the entire base ────────────────────────────────────────
@@ -125,6 +128,7 @@ if __name__ == "__main__":
     model_scratch = build_model(
         num_classes=NUM_CLASSES,
         freeze_base=False,
+        pretrained=False,
     )
     stats_s = count_parameters(model_scratch)
     print(f"  Total      : {stats_s['total']:>10,}")

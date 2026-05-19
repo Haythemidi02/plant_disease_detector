@@ -181,7 +181,7 @@ def load_checkpoint(checkpoint_path: str, model, device: torch.device) -> dict:
         checkpoint dict with keys: epoch, model_state, val_loss,
                                    val_acc, config, classes
     """
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state"])
     print(f"Loaded checkpoint from {checkpoint_path}")
     print(f"  Epoch    : {ckpt['epoch']}")
@@ -192,7 +192,7 @@ def load_checkpoint(checkpoint_path: str, model, device: torch.device) -> dict:
 
 def checkpoint_info(checkpoint_path: str):
     """Prints checkpoint metadata without loading into a model."""
-    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     print(f"\nCheckpoint : {checkpoint_path}")
     print(f"  Phase    : {ckpt['config']['phase']}")
     print(f"  Epoch    : {ckpt['epoch']}")
@@ -237,6 +237,8 @@ if __name__ == "__main__":
     tracker.summary()
 
     # Save and reload
-    tracker.save("/tmp/test_history.json")
-    reloaded = MetricTracker.load("/tmp/test_history.json")
+    import tempfile
+    tmp_path = Path(tempfile.gettempdir()) / "test_history.json"
+    tracker.save(str(tmp_path))
+    reloaded = MetricTracker.load(str(tmp_path))
     print(f"Reloaded {len(reloaded.history)} epochs from disk. OK")

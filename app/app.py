@@ -1,8 +1,13 @@
+import sys
+from pathlib import Path
+
+# Ensure src/ is importable regardless of working directory
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 import torch
 import numpy as np
 import gradio as gr
 from PIL import Image
-from pathlib import Path
 from torchvision import transforms
 
 from model import build_model
@@ -23,15 +28,15 @@ def load_model(checkpoint_path: str):
         device  : torch.device
     """
     device = get_device()
-    ckpt   = torch.load(checkpoint_path, map_location=device)
+    ckpt   = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     classes = ckpt["classes"]
     config  = ckpt["config"]
 
     model = build_model(
         num_classes   = len(classes),
-        freeze_base   = config["freeze_base"],
-        unfreeze_from = config.get("unfreeze_from", None),
+        freeze_base   = False,
+        pretrained    = config.get("pretrained", True),
     ).to(device)
 
     model.load_state_dict(ckpt["model_state"])
@@ -218,7 +223,7 @@ def build_app(checkpoint_path: str) -> gr.Blocks:
 
         # ── Info accordion ─────────────────────────────────────────────────────
         with gr.Accordion("About this model", open=False):
-            ckpt = torch.load(checkpoint_path, map_location="cpu")
+            ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
             gr.Markdown(
                 f"""
                 **Backbone**    : EfficientNetB0 pretrained on ImageNet  

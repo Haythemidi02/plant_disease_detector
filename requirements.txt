@@ -2,9 +2,6 @@
 torch>=2.0.0
 torchvision>=0.15.0
 
-# Model utilities
-timm>=0.9.0
-
 # App
 gradio>=4.0.0
 

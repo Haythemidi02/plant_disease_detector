@@ -2,8 +2,9 @@ import os
 import yaml
 import torch
 import torch.nn as nn
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.amp import autocast, GradScaler
 from pathlib import Path
 from tqdm import tqdm
 
@@ -28,6 +29,7 @@ def run_epoch(
     optimizer,
     device: torch.device,
     is_train: bool,
+    scaler: GradScaler = None,
 ) -> tuple[float, float]:
     """
     Runs one full pass over the dataloader.
@@ -46,13 +48,22 @@ def run_epoch(
             images = images.to(device)
             labels = labels.to(device)
 
-            logits = model(images)
-            loss   = criterion(logits, labels)
+            with autocast(device_type=device.type, enabled=scaler is not None):
+                logits = model(images)
+                loss   = criterion(logits, labels)
 
             if is_train:
                 optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
 
             total_loss    += loss.item() * images.size(0)
             preds          = logits.argmax(dim=1)
@@ -104,11 +115,12 @@ def train(config: dict, checkpoint_path: str = None):
         num_classes   = num_classes,
         freeze_base   = config["freeze_base"],
         unfreeze_from = config.get("unfreeze_from", None),
+        pretrained    = config.get("pretrained", True),
     ).to(device)
 
     # Load checkpoint if provided (Phase B starts from Phase A weights)
     if checkpoint_path and Path(checkpoint_path).exists():
-        state = torch.load(checkpoint_path, map_location=device)
+        state = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model.load_state_dict(state["model_state"])
         print(f"Loaded checkpoint : {checkpoint_path}\n")
 
@@ -119,11 +131,14 @@ def train(config: dict, checkpoint_path: str = None):
     # ── Loss, optimizer, scheduler ────────────────────────────────────────────
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
-    optimizer = Adam(
+    optimizer = AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr           = config["lr"],
         weight_decay = config.get("weight_decay", 1e-4),
     )
+
+    use_amp = device.type == "cuda"
+    scaler  = GradScaler("cuda") if use_amp else None
 
     scheduler = ReduceLROnPlateau(
         optimizer,
@@ -148,10 +163,10 @@ def train(config: dict, checkpoint_path: str = None):
         print(f"Epoch {epoch}/{config['epochs']}")
 
         train_loss, train_acc = run_epoch(
-            model, loaders["train"], criterion, optimizer, device, is_train=True
+            model, loaders["train"], criterion, optimizer, device, is_train=True, scaler=scaler
         )
         val_loss, val_acc = run_epoch(
-            model, loaders["val"], criterion, optimizer, device, is_train=False
+            model, loaders["val"], criterion, optimizer, device, is_train=False, scaler=scaler
         )
 
         scheduler.step(val_loss)

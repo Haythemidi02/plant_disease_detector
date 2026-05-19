@@ -1,7 +1,9 @@
 import os
+import torch
 from pathlib import Path
 from PIL import Image
-from torch.utils.data import Dataset, DataLoader, random_split
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
 
@@ -19,10 +21,10 @@ def get_transforms(split: str) -> transforms.Compose:
     if split == "train":
         return transforms.Compose([
             transforms.Resize((256, 256)),
+            transforms.RandomRotation(30),
             transforms.RandomCrop(224),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
-            transforms.RandomRotation(30),
             transforms.ColorJitter(brightness=0.3, contrast=0.3,
                                    saturation=0.3, hue=0.1),
             transforms.ToTensor(),
@@ -123,24 +125,35 @@ def get_dataloaders(
           "num_classes": int,
         }
     """
-    import torch
-
     # Build the full dataset with train transforms first (split later)
     full_dataset = PlantDataset(root_dir, split="train")
     n = len(full_dataset)
 
-    n_test  = int(n * test_split)
-    n_val   = int(n * val_split)
-    n_train = n - n_val - n_test
+    # Extract labels for stratification
+    labels = [label for _, label in full_dataset.samples]
 
-    generator = torch.Generator().manual_seed(seed)
-    train_ds, val_ds, test_ds = random_split(
-        full_dataset, [n_train, n_val, n_test], generator=generator
+    # First split: separate test set
+    train_val_idx, test_idx = train_test_split(
+        range(n),
+        test_size=test_split,
+        stratify=labels,
+        random_state=seed,
     )
 
-    # Override transforms for val/test subsets
-    val_ds.dataset  = _SubsetWithTransform(full_dataset, val_ds.indices,  "val")
-    test_ds.dataset = _SubsetWithTransform(full_dataset, test_ds.indices, "test")
+    # Second split: separate val from train
+    train_val_labels = [labels[i] for i in train_val_idx]
+    val_fraction = val_split / (1 - test_split)  # adjust fraction
+    train_idx, val_idx = train_test_split(
+        train_val_idx,
+        test_size=val_fraction,
+        stratify=train_val_labels,
+        random_state=seed,
+    )
+
+    # Create subsets with correct transforms
+    train_ds = _SubsetWithTransform(full_dataset, train_idx, "train")
+    val_ds   = _SubsetWithTransform(full_dataset, val_idx,   "val")
+    test_ds  = _SubsetWithTransform(full_dataset, test_idx,  "test")
 
     def make_loader(ds, shuffle):
         return DataLoader(
@@ -149,6 +162,7 @@ def get_dataloaders(
             shuffle=shuffle,
             num_workers=num_workers,
             pin_memory=True,
+            persistent_workers=True if num_workers > 0 else False,
         )
 
     return {

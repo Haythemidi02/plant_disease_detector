@@ -1,6 +1,7 @@
 phase:         baseline
 data_dir:      data/raw
 freeze_base:   false
+pretrained:    false
 unfreeze_from: null
 lr:            0.001
 weight_decay:  0.0001

@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from dataset import get_dataloaders
 from model import build_model
-from utils import get_device, load_checkpoint, format_class_name
+from utils import get_device, format_class_name
 
 
 # ── Inference pass ────────────────────────────────────────────────────────────
@@ -249,18 +249,19 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test"):
     device = get_device()
 
     # ── Load checkpoint ───────────────────────────────────────────────────────
-    ckpt    = torch.load(checkpoint_path, map_location=device)
+    ckpt    = torch.load(checkpoint_path, map_location=device, weights_only=False)
     classes = ckpt["classes"]
     config  = ckpt["config"]
 
     # ── Rebuild model and load weights ────────────────────────────────────────
     model = build_model(
         num_classes   = len(classes),
-        freeze_base   = config["freeze_base"],
-        unfreeze_from = config.get("unfreeze_from", None),
+        freeze_base   = False,
+        pretrained    = config.get("pretrained", True),
     ).to(device)
 
-    load_checkpoint(checkpoint_path, model, device)
+    model.load_state_dict(ckpt["model_state"])
+    print(f"Loaded checkpoint: {checkpoint_path}  (epoch {ckpt['epoch']}, val_acc={ckpt['val_acc']:.4f})")
 
     # ── Data ──────────────────────────────────────────────────────────────────
     loaders = get_dataloaders(
@@ -314,15 +315,15 @@ if __name__ == "__main__":
         results = {"Primary": metrics}
 
         for ckpt_path in args.compare:
-            ckpt    = torch.load(ckpt_path, map_location=device)
+            ckpt    = torch.load(ckpt_path, map_location=device, weights_only=False)
             classes = ckpt["classes"]
             config  = ckpt["config"]
             model   = build_model(
                 num_classes   = len(classes),
-                freeze_base   = config["freeze_base"],
-                unfreeze_from = config.get("unfreeze_from", None),
+                freeze_base   = False,
+                pretrained    = config.get("pretrained", True),
             ).to(device)
-            load_checkpoint(ckpt_path, model, device)
+            model.load_state_dict(ckpt["model_state"])
             loaders = get_dataloaders(args.data_dir, batch_size=32, num_workers=4)
             preds, labels, probs = run_inference(model, loaders[args.split], device)
             results[config["phase"]] = compute_metrics(preds, labels, probs, classes)
