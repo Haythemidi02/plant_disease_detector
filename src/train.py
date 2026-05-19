@@ -9,7 +9,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from dataset import get_dataloaders
-from model import build_model, count_parameters
+from model import build_model, count_parameters, describe_trainable_blocks, set_frozen_batchnorm_eval
 from utils import seed_everything, get_device, MetricTracker
 
 
@@ -36,6 +36,8 @@ def run_epoch(
     Returns (avg_loss, accuracy) for the epoch.
     """
     model.train() if is_train else model.eval()
+    if is_train:
+        set_frozen_batchnorm_eval(model)
 
     total_loss    = 0.0
     correct       = 0
@@ -75,6 +77,42 @@ def run_epoch(
     return avg_loss, accuracy
 
 
+def build_optimizer(model: nn.Module, config: dict):
+    """
+    Builds optimizer param groups.
+
+    For fine-tuning, optional backbone_lr and head_lr let you use smaller
+    updates in pretrained layers and larger updates in the new classifier.
+    """
+    weight_decay = config.get("weight_decay", 1e-4)
+    backbone_lr = config.get("backbone_lr")
+    head_lr = config.get("head_lr", config["lr"])
+
+    if backbone_lr is None:
+        return AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=config["lr"],
+            weight_decay=weight_decay,
+        )
+
+    backbone_params = [
+        p for name, p in model.named_parameters()
+        if p.requires_grad and not name.startswith("classifier.")
+    ]
+    head_params = [
+        p for name, p in model.named_parameters()
+        if p.requires_grad and name.startswith("classifier.")
+    ]
+
+    param_groups = []
+    if backbone_params:
+        param_groups.append({"params": backbone_params, "lr": backbone_lr})
+    if head_params:
+        param_groups.append({"params": head_params, "lr": head_lr})
+
+    return AdamW(param_groups, weight_decay=weight_decay)
+
+
 # ── Training loop ─────────────────────────────────────────────────────────────
 
 def train(config: dict, checkpoint_path: str = None):
@@ -94,6 +132,9 @@ def train(config: dict, checkpoint_path: str = None):
     print(f"Phase       : {config['phase']}")
     print(f"Freeze base : {config['freeze_base']}")
     print(f"LR          : {config['lr']}")
+    if config.get("backbone_lr") is not None:
+        print(f"Backbone LR : {config['backbone_lr']}")
+        print(f"Head LR     : {config.get('head_lr', config['lr'])}")
     print(f"Epochs      : {config['epochs']}\n")
 
     # ── Data ──────────────────────────────────────────────────────────────────
@@ -127,15 +168,19 @@ def train(config: dict, checkpoint_path: str = None):
     params = count_parameters(model)
     print(f"Trainable params : {params['trainable']:,}")
     print(f"Frozen params    : {params['frozen']:,}\n")
+    print("Trainable blocks:")
+    for row in describe_trainable_blocks(model):
+        status = "trainable" if row["trainable"] else "frozen"
+        print(
+            f"  {row['block']:<12} {status:<9} "
+            f"{row['trainable_params']:>10,}/{row['total_params']:,}"
+        )
+    print()
 
     # ── Loss, optimizer, scheduler ────────────────────────────────────────────
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    criterion = nn.CrossEntropyLoss(label_smoothing=config.get("label_smoothing", 0.1))
 
-    optimizer = AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr           = config["lr"],
-        weight_decay = config.get("weight_decay", 1e-4),
-    )
+    optimizer = build_optimizer(model, config)
 
     use_amp = device.type == "cuda"
     scaler  = GradScaler("cuda") if use_amp else None
@@ -211,6 +256,7 @@ def train(config: dict, checkpoint_path: str = None):
 
     print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
     print(f"Checkpoint saved at: {save_path}")
+    tracker.summary()
     tracker.save(ckpt_dir / f"{config['phase']}_history.json")
 
     return model, tracker

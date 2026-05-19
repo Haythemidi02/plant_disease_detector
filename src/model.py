@@ -71,6 +71,45 @@ def count_parameters(model: nn.Module) -> dict:
     return {"total": total, "trainable": trainable, "frozen": total - trainable}
 
 
+def set_frozen_batchnorm_eval(model: nn.Module) -> None:
+    """
+    Keeps BatchNorm statistics fixed for frozen feature layers.
+
+    Freezing parameters alone does not stop BatchNorm running_mean and
+    running_var from changing during model.train(). This makes feature
+    extraction behave like a cleaner transfer-learning experiment.
+    """
+    for module in model.modules():
+        if isinstance(module, nn.modules.batchnorm._BatchNorm):
+            params = list(module.parameters())
+            if params and not any(param.requires_grad for param in params):
+                module.eval()
+
+
+def describe_trainable_blocks(model: nn.Module) -> list[dict]:
+    """Returns feature/head trainability in a notebook-friendly structure."""
+    rows = []
+    for name, child in model.features.named_children():
+        total = sum(p.numel() for p in child.parameters())
+        trainable = sum(p.numel() for p in child.parameters() if p.requires_grad)
+        rows.append({
+            "block": f"features.{name}",
+            "trainable": trainable > 0,
+            "trainable_params": trainable,
+            "total_params": total,
+        })
+
+    total = sum(p.numel() for p in model.classifier.parameters())
+    trainable = sum(p.numel() for p in model.classifier.parameters() if p.requires_grad)
+    rows.append({
+        "block": "classifier",
+        "trainable": trainable > 0,
+        "trainable_params": trainable,
+        "total_params": total,
+    })
+    return rows
+
+
 def print_layer_status(model: nn.Module):
     """
     Prints each feature block with its trainable status.

@@ -5,6 +5,7 @@ pretrained:    false
 unfreeze_from: null
 lr:            0.001
 weight_decay:  0.0001
+label_smoothing: 0.0
 epochs:        25
 batch_size:    32
 num_workers:   4

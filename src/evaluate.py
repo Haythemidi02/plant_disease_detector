@@ -70,7 +70,8 @@ def compute_metrics(
     probs  = np.array(probs)
 
     accuracy    = (preds == labels).mean()
-    top5_acc    = top_k_accuracy_score(labels, probs, k=5)
+    top_k       = min(5, len(classes))
+    top5_acc    = top_k_accuracy_score(labels, probs, k=top_k, labels=np.arange(len(classes)))
     f1_macro    = f1_score(labels, preds, average="macro",    zero_division=0)
     f1_weighted = f1_score(labels, preds, average="weighted", zero_division=0)
 
@@ -266,8 +267,10 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test"):
     # ── Data ──────────────────────────────────────────────────────────────────
     loaders = get_dataloaders(
         root_dir    = data_dir,
-        batch_size  = 32,
-        num_workers = 4,
+        val_split   = config.get("val_split", 0.15),
+        test_split  = config.get("test_split", 0.10),
+        batch_size  = config.get("batch_size", 32),
+        num_workers = config.get("num_workers", 4),
         seed        = config.get("seed", 42),
     )
     loader = loaders[split]
@@ -324,7 +327,14 @@ if __name__ == "__main__":
                 pretrained    = config.get("pretrained", True),
             ).to(device)
             model.load_state_dict(ckpt["model_state"])
-            loaders = get_dataloaders(args.data_dir, batch_size=32, num_workers=4)
+            loaders = get_dataloaders(
+                args.data_dir,
+                val_split=config.get("val_split", 0.15),
+                test_split=config.get("test_split", 0.10),
+                batch_size=config.get("batch_size", 32),
+                num_workers=config.get("num_workers", 4),
+                seed=config.get("seed", 42),
+            )
             preds, labels, probs = run_inference(model, loaders[args.split], device)
             results[config["phase"]] = compute_metrics(preds, labels, probs, classes)
 

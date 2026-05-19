@@ -3,7 +3,10 @@ data_dir:      data/raw
 freeze_base:   true
 unfreeze_from: -3
 lr:            0.00001
+backbone_lr:   0.00001
+head_lr:       0.0001
 weight_decay:  0.0001
+label_smoothing: 0.1
 epochs:        15
 batch_size:    32
 num_workers:   4

@@ -7,6 +7,9 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+
+
 # ── Transforms ────────────────────────────────────────────────────────────────
 
 def get_transforms(split: str) -> transforms.Compose:
@@ -65,6 +68,12 @@ class PlantDataset(Dataset):
         self.split     = split
         self.transform = get_transforms(split)
 
+        if not self.root_dir.exists():
+            raise FileNotFoundError(
+                f"Dataset directory not found: {self.root_dir}. "
+                "Download/unzip PlantVillage into data/raw first."
+            )
+
         # Build class list (sorted for reproducibility)
         self.classes = sorted([
             d.name for d in self.root_dir.iterdir() if d.is_dir()
@@ -76,8 +85,15 @@ class PlantDataset(Dataset):
         for cls in self.classes:
             cls_dir = self.root_dir / cls
             for img_path in cls_dir.iterdir():
-                if img_path.suffix.lower() in {".jpg", ".jpeg", ".png"}:
+                if img_path.suffix.lower() in IMAGE_EXTENSIONS:
                     self.samples.append((img_path, self.class_to_idx[cls]))
+
+        if not self.classes:
+            raise ValueError(f"No class folders found under {self.root_dir}.")
+        if not self.samples:
+            raise ValueError(
+                f"No images with extensions {sorted(IMAGE_EXTENSIONS)} found under {self.root_dir}."
+            )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -128,9 +144,17 @@ def get_dataloaders(
     # Build the full dataset with train transforms first (split later)
     full_dataset = PlantDataset(root_dir, split="train")
     n = len(full_dataset)
+    if val_split <= 0 or test_split <= 0 or val_split + test_split >= 1:
+        raise ValueError("val_split and test_split must be positive and sum to less than 1.")
 
     # Extract labels for stratification
     labels = [label for _, label in full_dataset.samples]
+    class_counts = torch.bincount(torch.tensor(labels), minlength=len(full_dataset.classes))
+    if int(class_counts.min()) < 3:
+        raise ValueError(
+            "Each class needs at least 3 images for stratified train/val/test splitting. "
+            f"Smallest class has {int(class_counts.min())}."
+        )
 
     # First split: separate test set
     train_val_idx, test_idx = train_test_split(
@@ -161,7 +185,7 @@ def get_dataloaders(
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
-            pin_memory=True,
+            pin_memory=torch.cuda.is_available(),
             persistent_workers=True if num_workers > 0 else False,
         )
 
