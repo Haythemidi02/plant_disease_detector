@@ -2,6 +2,7 @@ import os
 import yaml
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.amp import autocast, GradScaler
@@ -20,6 +21,24 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
+# ── Mixup Helper ──────────────────────────────────────────────────────────────
+
+def mixup_data(x, y, alpha=0.2):
+    """Returns mixed inputs, pairs of targets, and lambda"""
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+
 # ── Single epoch ──────────────────────────────────────────────────────────────
 
 def run_epoch(
@@ -29,6 +48,7 @@ def run_epoch(
     optimizer,
     device: torch.device,
     is_train: bool,
+    config: dict,
     scaler: GradScaler = None,
 ) -> tuple[float, float]:
     """
@@ -43,6 +63,8 @@ def run_epoch(
     correct       = 0
     total_samples = 0
 
+    mixup_alpha = config.get("mixup_alpha", 0.0)
+
     ctx = torch.enable_grad() if is_train else torch.no_grad()
 
     with ctx:
@@ -50,9 +72,15 @@ def run_epoch(
             images = images.to(device)
             labels = labels.to(device)
 
-            with autocast(device_type=device.type, enabled=scaler is not None):
-                logits = model(images)
-                loss   = criterion(logits, labels)
+            if is_train and mixup_alpha > 0:
+                images, targets_a, targets_b, lam = mixup_data(images, labels, mixup_alpha)
+                with autocast(device_type=device.type, enabled=scaler is not None):
+                    logits = model(images)
+                    loss   = mixup_criterion(criterion, logits, targets_a, targets_b, lam)
+            else:
+                with autocast(device_type=device.type, enabled=scaler is not None):
+                    logits = model(images)
+                    loss   = criterion(logits, labels)
 
             if is_train:
                 optimizer.zero_grad()
@@ -69,6 +97,9 @@ def run_epoch(
 
             total_loss    += loss.item() * images.size(0)
             preds          = logits.argmax(dim=1)
+            
+            # For accuracy, just use the original labels even if mixup is used
+            # It's an approximation during training, val will be exact
             correct       += (preds == labels).sum().item()
             total_samples += images.size(0)
 
@@ -81,34 +112,65 @@ def build_optimizer(model: nn.Module, config: dict):
     """
     Builds optimizer param groups.
 
-    For fine-tuning, optional backbone_lr and head_lr let you use smaller
-    updates in pretrained layers and larger updates in the new classifier.
+    Supports Layer-wise Learning Rate Decay (LLRD) via `lr_decay`,
+    or falls back to differential learning rates `backbone_lr` and `head_lr`.
     """
     weight_decay = config.get("weight_decay", 1e-4)
-    backbone_lr = config.get("backbone_lr")
-    head_lr = config.get("head_lr", config["lr"])
+    lr = config["lr"]
+    lr_decay = config.get("lr_decay")
 
-    if backbone_lr is None:
-        return AdamW(
-            filter(lambda p: p.requires_grad, model.parameters()),
-            lr=config["lr"],
-            weight_decay=weight_decay,
-        )
+    if lr_decay is None:
+        # Fallback to differential learning rates
+        backbone_lr = config.get("backbone_lr")
+        head_lr = config.get("head_lr", lr)
 
-    backbone_params = [
-        p for name, p in model.named_parameters()
-        if p.requires_grad and not name.startswith("classifier.")
-    ]
-    head_params = [
-        p for name, p in model.named_parameters()
-        if p.requires_grad and name.startswith("classifier.")
-    ]
+        if backbone_lr is None:
+            return AdamW(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                lr=lr,
+                weight_decay=weight_decay,
+            )
 
+        backbone_params = [
+            p for name, p in model.named_parameters()
+            if p.requires_grad and not name.startswith("classifier.")
+        ]
+        head_params = [
+            p for name, p in model.named_parameters()
+            if p.requires_grad and name.startswith("classifier.")
+        ]
+
+        param_groups = []
+        if backbone_params:
+            param_groups.append({"params": backbone_params, "lr": backbone_lr})
+        if head_params:
+            param_groups.append({"params": head_params, "lr": head_lr})
+
+        return AdamW(param_groups, weight_decay=weight_decay)
+
+    # ── Layer-wise Learning Rate Decay (LLRD) ─────────────────────────────────
     param_groups = []
-    if backbone_params:
-        param_groups.append({"params": backbone_params, "lr": backbone_lr})
+    
+    # Head gets the base lr
+    head_params = [p for name, p in model.classifier.named_parameters() if p.requires_grad]
     if head_params:
-        param_groups.append({"params": head_params, "lr": head_lr})
+        param_groups.append({"params": head_params, "lr": lr})
+        
+    # Features blocks (EfficientNetB0 has 9 blocks inside model.features)
+    feature_layers = list(model.features.named_children())
+    # reverse the layers to apply decay from end to start
+    current_lr = lr * lr_decay
+    for name, child in reversed(feature_layers):
+        child_params = [p for p in child.parameters() if p.requires_grad]
+        if child_params:
+            param_groups.append({"params": child_params, "lr": current_lr})
+        current_lr *= lr_decay
+
+    # Capture any remaining parameters not in features or classifier
+    handled_params = set(id(p) for group in param_groups for p in group["params"])
+    other_params = [p for p in model.parameters() if p.requires_grad and id(p) not in handled_params]
+    if other_params:
+        param_groups.append({"params": other_params, "lr": current_lr})
 
     return AdamW(param_groups, weight_decay=weight_decay)
 
@@ -132,9 +194,13 @@ def train(config: dict, checkpoint_path: str = None):
     print(f"Phase       : {config['phase']}")
     print(f"Freeze base : {config['freeze_base']}")
     print(f"LR          : {config['lr']}")
-    if config.get("backbone_lr") is not None:
+    if config.get("lr_decay") is not None:
+        print(f"LR Decay    : {config['lr_decay']} (Layer-wise)")
+    elif config.get("backbone_lr") is not None:
         print(f"Backbone LR : {config['backbone_lr']}")
         print(f"Head LR     : {config.get('head_lr', config['lr'])}")
+    if config.get("mixup_alpha", 0.0) > 0:
+        print(f"Mixup alpha : {config['mixup_alpha']}")
     print(f"Epochs      : {config['epochs']}\n")
 
     # ── Data ──────────────────────────────────────────────────────────────────
@@ -208,10 +274,10 @@ def train(config: dict, checkpoint_path: str = None):
         print(f"Epoch {epoch}/{config['epochs']}")
 
         train_loss, train_acc = run_epoch(
-            model, loaders["train"], criterion, optimizer, device, is_train=True, scaler=scaler
+            model, loaders["train"], criterion, optimizer, device, True, config, scaler
         )
         val_loss, val_acc = run_epoch(
-            model, loaders["val"], criterion, optimizer, device, is_train=False, scaler=scaler
+            model, loaders["val"], criterion, optimizer, device, False, config, scaler
         )
 
         scheduler.step(val_loss)

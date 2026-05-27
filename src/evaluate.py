@@ -19,7 +19,7 @@ from utils import get_device, format_class_name
 
 # ── Inference pass ────────────────────────────────────────────────────────────
 
-def run_inference(model, loader, device) -> tuple[list, list, list]:
+def run_inference(model, loader, device, use_tta: bool = False) -> tuple[list, list, list]:
     """
     Runs the model over a dataloader without gradient computation.
 
@@ -36,7 +36,14 @@ def run_inference(model, loader, device) -> tuple[list, list, list]:
     with torch.no_grad():
         for images, labels in tqdm(loader, desc="Running inference"):
             images = images.to(device)
-            logits = model(images)
+            if use_tta:
+                # Basic Test-Time Augmentation: average predictions of original and flipped images
+                logits1 = model(images)
+                logits2 = model(torch.flip(images, dims=[3])) # Horizontal flip
+                logits3 = model(torch.flip(images, dims=[2])) # Vertical flip
+                logits = (logits1 + logits2 + logits3) / 3.0
+            else:
+                logits = model(images)
             probs  = torch.softmax(logits, dim=1)
             preds  = probs.argmax(dim=1)
 
@@ -235,7 +242,7 @@ def save_results(metrics: dict, path: str):
 
 # ── Main evaluate function ────────────────────────────────────────────────────
 
-def evaluate(checkpoint_path: str, data_dir: str, split: str = "test"):
+def evaluate(checkpoint_path: str, data_dir: str, split: str = "test", use_tta: bool = False):
     """
     Full evaluation pipeline for a single checkpoint.
 
@@ -277,7 +284,7 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test"):
     print(f"\nEvaluating on {split} set ({len(loader.dataset)} images) ...")
 
     # ── Inference + metrics ───────────────────────────────────────────────────
-    preds, labels, probs = run_inference(model, loader, device)
+    preds, labels, probs = run_inference(model, loader, device, use_tta=use_tta)
     metrics = compute_metrics(preds, labels, probs, classes)
 
     print_metrics(metrics)
@@ -307,10 +314,11 @@ if __name__ == "__main__":
     parser.add_argument("--compare",    nargs="+",      default=None,
                         help="Extra checkpoints to compare against. "
                              "e.g. --compare checkpoints/phase_b_best.pt checkpoints/baseline_best.pt")
+    parser.add_argument("--tta",        action="store_true", help="Use Test-Time Augmentation (TTA)")
     args = parser.parse_args()
 
     # Single checkpoint evaluation
-    metrics = evaluate(args.checkpoint, args.data_dir, args.split)
+    metrics = evaluate(args.checkpoint, args.data_dir, args.split, use_tta=args.tta)
 
     # Optional side-by-side comparison
     if args.compare:
@@ -335,7 +343,7 @@ if __name__ == "__main__":
                 num_workers=config.get("num_workers", 4),
                 seed=config.get("seed", 42),
             )
-            preds, labels, probs = run_inference(model, loaders[args.split], device)
+            preds, labels, probs = run_inference(model, loaders[args.split], device, use_tta=args.tta)
             results[config["phase"]] = compute_metrics(preds, labels, probs, classes)
 
         compare_checkpoints(results)
